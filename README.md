@@ -26,7 +26,7 @@ A lightweight macOS utility that scans a folder for video and audio files (MP4, 
 ---
 
 ## How to Install
-i
+Fetch the release from github
 ## How to Build
 
 1. **Clone the repository**  
