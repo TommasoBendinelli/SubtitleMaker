@@ -8,3 +8,5 @@ DerivedData/
 Pods/
 # macOS
 .DS_Store
+whisper
+ffmpeg
