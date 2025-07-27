@@ -1,0 +1,10 @@
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcworkspace
+*.bin
+# CocoaPods / SPM caches
+Pods/
+# macOS
+.DS_Store
