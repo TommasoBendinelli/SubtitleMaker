@@ -2,6 +2,15 @@ import SwiftUI
 import Combine
 import AVFoundation    // ← for reading WAV duration
 
+
+func fetchDurationSeconds(from asset: AVAsset) async throws -> Double {
+    // Asynchronously load the CMTime for .duration
+    let duration: CMTime = try await asset.load(.duration)
+    // Convert to seconds
+    return CMTimeGetSeconds(duration)
+}
+
+
 // MARK: - Model
 struct VideoFile: Identifiable {
     let id = UUID()
@@ -89,41 +98,46 @@ final class Processor: ObservableObject {
     /// Convert, transcribe and subtitle one item in `videos`.
     private func processVideo(at index: Int) async {
         guard videos.indices.contains(index) else { return }
-        await MainActor.run { videos[index].status = "Converting" }
-
+        
         // ── file info ────────────────────────────────────────────────────────────────
         let fileURL   = videos[index].url
         let ext       = fileURL.pathExtension.lowercased()
         let baseName  = fileURL.deletingPathExtension().lastPathComponent
         let srtURL    = fileURL.deletingPathExtension().appendingPathExtension("srt")
 
-        // skip if we already have subtitles next to the original
-        if FileManager.default.fileExists(atPath: srtURL.path) {
-            await MainActor.run { videos[index].status = "Skipped" }
-            return
-        }
-
-        // audio-only detection (extend this set any time)
+        // ── temp / output paths ──────────────────────────────────────────────────────
         let audioOnlyExts: Set<String> = ["wav", "mp3", "m4a", "flac", "aac", "ogg", "opus"]
         let isAudioOnly = audioOnlyExts.contains(ext)
 
-        // ── temp paths ───────────────────────────────────────────────────────────────
-        let wavURL: URL
-        if ext == "wav" {
-            wavURL = fileURL            // already WAV
-        } else {
-            wavURL = tempDir.appendingPathComponent(baseName).appendingPathExtension("wav")
-        }
+        let wavURL: URL = ext == "wav"
+            ? fileURL                                               // already WAV
+            : tempDir.appendingPathComponent(baseName).appendingPathExtension("wav")
 
         let srtPrefix   = tempDir.appendingPathComponent(baseName)
         let tempSrt     = srtPrefix.appendingPathExtension("srt")
+
         let resFolder   = fileURL.deletingLastPathComponent().appendingPathComponent("res")
         try? FileManager.default.createDirectory(at: resFolder, withIntermediateDirectories: true)
         let outputURL   = resFolder.appendingPathComponent(baseName + "_subbed.mp4")
+        
+        // ── decide what needs doing ──────────────────────────────────────────────────
+        let srtExists    = FileManager.default.fileExists(atPath: srtURL.path)
+        let videoExists  = FileManager.default.fileExists(atPath: outputURL.path)
 
+        if videoExists {
+            await MainActor.run { videos[index].status = "Skipped (already done)" }
+            return
+        }
+        
+        // Only reach here if the final video is missing.
+        // Two scenarios:
+        //   • SRT missing  → we must transcribe first, then burn.
+        //   • SRT exists   → skip transcription, just burn.
+        
         do {
-            // 1️⃣ Extract/convert to 16 kHz mono WAV for Whisper
-            if ext != "wav" {
+            // 1️⃣ Ensure 16 kHz mono WAV for Whisper ─ only if we will transcribe
+            if !srtExists && ext != "wav" {
+                await MainActor.run { videos[index].status = "Converting audio" }
                 try await runProcess(ffmpegPath, arguments: [
                     "-y", "-i", fileURL.path,
                     "-ar", "16000", "-ac", "1",
@@ -131,42 +145,43 @@ final class Processor: ObservableObject {
                     wavURL.path
                 ])
             }
-
-            // 2️⃣ Transcribe with Whisper -> .srt
-            await MainActor.run { videos[index].status = "Transcribing" }
-            try await runProcess(whisperPath, arguments: [
-                "-m", whisperModelPath,
-                "-f", wavURL.path,
-                "-osrt", "-l", "auto",
-                "-of", srtPrefix.path
-            ])
-            try? FileManager.default.removeItem(at: srtURL)
-            try FileManager.default.moveItem(at: tempSrt, to: srtURL)
-
-            // 3️⃣ Compress & burn subtitles
-            await MainActor.run { videos[index].status = "Compressing" }
-
+            
+            // 2️⃣ Transcribe with Whisper → .srt (only if needed)
+            if !srtExists {
+                await MainActor.run { videos[index].status = "Transcribing" }
+                try await runProcess(whisperPath, arguments: [
+                    "-m", whisperModelPath,
+                    "-f", wavURL.path,
+                    "-osrt", "-l", "auto",
+                    "-of", srtPrefix.path
+                ])
+                try? FileManager.default.removeItem(at: srtURL)
+                try FileManager.default.moveItem(at: tempSrt, to: srtURL)
+            }
+            
+            // 3️⃣ Burn subtitles (always runs because we reached here with missing video)
+            await MainActor.run { videos[index].status = "Burning subtitles" }
+            
             let escapedSRT = ffmpegEscape(srtURL.path)
             let ffArgs: [String]
-
+            
             if isAudioOnly {
                 // — create synthetic 16:9 black canvas matching audio duration —
-                let asset   = AVURLAsset(url: wavURL)
-                let dur     = CMTimeGetSeconds(asset.duration)
-                let width   = Int(Double(targetHeight) * 16.0 / 9.0)
+                let asset = AVURLAsset(url: wavURL)
+                let dur = try await fetchDurationSeconds(from: asset)
+                let width = Int(Double(targetHeight) * 16.0 / 9.0)
                 let colorSrc = "color=size=\(width)x\(targetHeight):color=black:duration=\(dur)"
-
+                
                 ffArgs = [
                     "-y",
-                    "-f", "lavfi", "-i", colorSrc,               // video source
-                    "-i", wavURL.path,                           // audio source
+                    "-f", "lavfi", "-i", colorSrc,      // video
+                    "-i", wavURL.path,                  // audio
                     "-vf", "subtitles='\(escapedSRT)':force_style='Fontsize=24,PrimaryColour=&H00FFFFFF'",
                     "-c:v", "libx264", "-preset", preset, "-crf", crf,
                     "-c:a", "aac", "-b:a", "128k",
                     outputURL.path
                 ]
             } else {
-                // — burn on the real video, scaled to target height —
                 let vfChain = "subtitles='\(escapedSRT)',scale=-2:\(targetHeight)"
                 ffArgs = [
                     "-y", "-i", fileURL.path,
@@ -176,16 +191,15 @@ final class Processor: ObservableObject {
                     outputURL.path
                 ]
             }
-
+            
             try await runProcess(ffmpegPath, arguments: ffArgs)
-
             await MainActor.run { videos[index].status = "Done → res/" }
+            
         } catch {
             await MainActor.run { videos[index].status = "Error" }
             print("Error processing \(fileURL.lastPathComponent): \(error)")
         }
-    }
-}
+    }}
 
 // MARK: - UI
 struct ContentView: View {
