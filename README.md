@@ -29,12 +29,12 @@ A lightweight macOS utility that scans a folder for video and audio files (MP4, 
 Fetch the release from github
 ## How to Build
 
-1. **Clone the repository**  
+**Clone the repository**  
    ```bash
    git clone https://github.com/your-username/VideoSubtitler.git
    cd VideoSubtitler
 
-2. **Install dependencies**  
+**Install dependencies**  
    - **Homebrew** (if not already installed):  
      ```bash
      /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
@@ -50,7 +50,7 @@ Fetch the release from github
    - **Whisper model file**  
      Download `ggml-small.bin` from the official Whisper repository and place it in `VideoSubtitler/Resources/`.
 
-3. **Open and build**  
+**Open and build**  
    - Launch `VideoSubtitler.xcodeproj` in Xcode.  
    - Select a macOS target (10.15 Catalina or later).  
    - Click **Run** (⌘R) to build and install the app to your Applications folder.  
