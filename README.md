@@ -33,7 +33,7 @@ Fetch the release from github
    ```bash
    git clone https://github.com/your-username/VideoSubtitler.git
    cd VideoSubtitler
-
+  ```
 **Install dependencies**  
    - **Homebrew** (if not already installed):  
      ```bash
